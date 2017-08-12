@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Pi sight</title>
+    <link rel='shortcut icon' type='image/x-icon' href='favicon.ico' />
+    <link href="https://fonts.googleapis.com/css?family=Lato" rel="stylesheet">
+    <script src="http://code.jquery.com/jquery.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <link rel="stylesheet" href="style.css">
+    <script src="script.js"></script>
+  </head>
+  <body>
+    <div class="logo">
+        <img id="logo" src="./Img/PiSight.png" alt="Pi Sight">
+    </div>
+    <div class="accordion">
+      <div class="accordion-section">
+        <a class="accordion-section-title" href="#accordion-1">Most recent picture</a>
+        <div id="accordion-1" class="accordion-section-content">
+          <h1 id="lastPicTxt">No photos made yet this sesion!</h1>
+          <img src="" id="lastPic">
+        </div><!--end .accordion-section-content-->
+      </div><!--end .accordion-section-->
+      <div class="accordion-section">
+        <a class="accordion-section-title" href="#accordion-2">Photo gallery</a>
+        <div id="accordion-2" class="accordion-section-content">
+          <div class="wrapper">
+            <div class="photoSlider slider">
+            </div>
+            <p class="prev"><</p>
+            <p class="next">></p>
+          </div>
+        </div><!--end .accordion-section-content-->
+      </div><!--end .accordion-section-->
+      <div class="accordion-section">
+        <a class="accordion-section-title" href="#accordion-3">GIF gallery</a>
+        <div id="accordion-3" class="accordion-section-content">
+          <div class="wrapperGif">
+            <div class="sliderGif">
+            </div>
+            <p class="prevGif"><</p>
+            <p class="nextGif">></p>
+          </div>
+        </div><!--end .accordion-section-content-->
+      </div><!--end .accordion-section-->
+      <div class="accordion-section">
+        <a class="accordion-section-title notLive" id="timelapse" href="#accordion-4">Timelapse stream</a>
+        <div id="accordion-4" class="accordion-section-content">
+          <h1 id="timelapseTxt">No timelapse going at the moment.</h1>
+          <img src="" id="timelapseLive" class="hidden">
+        </div><!--end .accordion-section-content-->
+      </div><!--end .accordion-section-->
+    </div><!--end .accordion-->
+  </body>
+</html>

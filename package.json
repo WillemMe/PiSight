@@ -1,0 +1,22 @@
+{
+  "name": "pi_sight",
+  "version": "1.0.0",
+  "description": "Pi camera",
+  "main": "app.js",
+  "dependencies": {
+    "chokidar": "^1.6.1",
+    "express": "^4.15.2",
+    "johnny-five": "^0.10.8",
+    "raspicam": "^0.2.13"
+  },
+  "devDependencies": {},
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "Willem Me.",
+  "license": "ISC",
+  "keywords": [
+    "Pi",
+    "Camera"
+  ]
+}

@@ -1,127 +1,171 @@
 var five = require("johnny-five"),
     Raspi = require("raspi-io"),
     Picam = require("raspicam"),
-    chokidar = require('chokidar'),
     fs = require('fs'),
     shell = require("shelljs")
     path = require('path'),
     countFiles = require("count-files");
+
+//Led colors
+var colorBlue = "#0600c9", colorRed = "#fe0000"
+// Check if camera is not being run
+var pid = shell.exec("ps -C raspistill -o pid=", { silent:true }).stdout
+var ip = shell.exec("ifconfig | awk \'/inet addr/{if(substr($2,6)!= \"1.0.0.1\"&&substr($2,6) != \"127.0.0.1\"){ print substr($2,6)}}\'",{silent:true}).stdout
+if(pid){
+  console.log("Camera is still being used, killing it!");
+  shell.exec("kill "+pid, { silent:true })
+}
 
 var app = require('express')(),
     express = require('express'),
     server = require('http').Server(app),
     io = require('socket.io', { rememberTransport: false, transports: ['WebSocket', 'Flash Socket', 'AJAX long-polling'] })(server);
 
-var pathImg = path.join(__dirname,"/public/stream/streaming.jpg")
 // Server setup
 server.listen(80);
-app.use(express.static(path.join(__dirname, 'public')));
+app.use("/",express.static(path.join(__dirname, 'public')));
+app.use("/data", express.static(path.join(__dirname, '/data')));
 // ╔═════════════════════════════════════════════════════════════════════════════╗
-// ║                                  STREAMING                                  ║
+// ║                                  Socket.IO                                  ║
 // ╚═════════════════════════════════════════════════════════════════════════════╝
-
-io.on('connection', function(socket) {
+io.on('connection', function(socket){
   // Start steaming
-  console.log("Connected");
-  socket.on('start-stream', function(){
-    console.log("Streaming to connection");
-    if(!streaming){
-      startStreaming()
-    }
-    setInterval(sendImg,35)
-  });
-  socket.on("restart-stream", function(){
-    stopStreaming()
-    setTimeout(startStreaming, 2000)
-  })
-  socket.on("stop-stream", function(){
-    stopStreaming()
-  })
+  displayConnected()
   socket.on('disconnect', function() {
-    // no more sockets, kill the stream
-    if (io.engine.clientsCount == 0) {
-      stopStreaming()
-    }
+    displayConnected()
   });
 });
-
-var streaming = false
-function startStreaming() {
-  streaming = true;
-  stream(true)
+function displayConnected() {
+  saveDisplay();
+  lcd.clear().cursor(1,3).print("Connected: "+io.engine.clientsCount)
+  setTimeout(function(){
+    menuScroll("",lcd,cur,true)
+    if(menuHight == "opt" || menuHight == "optList"){
+      console.log("has optfunc");
+      if(cur.optFunc && mode !== "timelapse"){
+        cur.optFunc(lcd)
+      }
+    }else if(menuHight == "sub")
+    console.log(mode);
+    if(cur.subFunc && mode !== "timelapse"){
+      cur.subFunc(lcd)
+    }
+  },2000)
 }
-function stopStreaming() {
-  streaming = false;
-  stream(false)
-}
-
-function sendImg(){
-    fs.readFile(pathImg,function(err, buffer){
-      io.sockets.emit("liveStream", buffer.toString("base64"))
-    })
-}
-function sendLastPic(path) {
-  if(path){
-    fs.readFile(path,function(err, buffer){
+function sendLastPic(curPath) {
+  if(curPath){
+    fs.readFile(curPath,function(err, buffer){
       console.log("Last pic send");
       io.sockets.emit("lastPic", buffer.toString("base64"))
     })
   }
 }
+function sendTimekey(timePath,localPath,done){
+  if(done){
+    io.sockets.emit("timeKey",false)
+  }else{
+    fs.readdir(timePath,(err, files)=>{
+      if(path.extname(files[files.length-1]) == ".jpg"){
+        io.sockets.emit("timeKey",localPath+"/"+files[files.length-1]);
+      }
+    });
+  }
+}
+function random(intergers){
+  if(!isNaN(intergers)){
+    var r = Math.random()
+    r = Math.floor(r * Math.pow(10, intergers))
+    return r
+  }
+}
+function webRefresh(){
+  io.sockets.emit("refresh",true)
+}
+// ╔═════════════════════════════════════════════════════════════════════════════╗
+// ║                                 Gallery                                     ║
+// ╚═════════════════════════════════════════════════════════════════════════════╝
+function getPictures(req, res) {
+  var list = [], i = 0
+  fs.readdir(path.join(__dirname, 'data/photos'), (err, files) => {
+    files.forEach(file => {
+      list[i] = file;
+      i += 1
+    });
+    res.json({list})
+  })
+}
+app.get("/pictures",getPictures)
 
+function getGifs(req,res){
+  var list = [], i = 0;
+  fs.readdir(path.join(__dirname, 'data/gif'), (err, files) => {
+    files.forEach(file => {
+      if(path.extname(file) == ".gif"){
+        list[i] = file;
+        i += 1
+      }
+    });
+    res.json({list})
+  });
+}
+app.get("/gifs",getGifs)
+// ╔═════════════════════════════════════════════════════════════════════════════╗
+// ║                                 Hardware                                    ║
+// ╚═════════════════════════════════════════════════════════════════════════════╝
+var lcd,LED
+var board = new five.Board({
+      io: new Raspi()
+});
+board.on("ready", function() {
+  LED = new five.Led.RGB({
+    pins: [26, 23, 24]
+  });
+  var buttonA = new five.Button(0);
+  buttonA.on("press", function() {
+    input(lcd,"A")
+  });
+
+  var buttonB = new five.Button(2);
+  buttonB.on("press", function() {
+    input(lcd,"B")
+  });
+
+  var buttonC = new five.Button(3);
+  buttonC.on("press", function() {
+    input(lcd,"C")
+  });
+  var buttonD = new five.Button(1);
+  buttonD.on("press", function() {
+    input(lcd,"D")
+  });
+
+  lcd = new five.LCD({
+    controller: "PCF8574A",
+    rows: 4,
+    cols: 20
+  });
+
+  lcd.clear().noBlink()
+  lcd.useChar("pointerup").useChar("pointerdown").useChar("fullprogress").useChar("pointerright").useChar("back");
+  LED.color(colorBlue);
+  LED.intensity(100);
+  if(ip){
+    lcd.cursor(2,3).print(ip)
+  }
+  setTimeout(()=>{
+    menu(lcd,"")
+  },2000)
+
+});
+// ╔═════════════════════════════════════════════════════════════════════════════╗
+// ║                               CAMERA MODES                                  ║
+// ╚═════════════════════════════════════════════════════════════════════════════╝
 function getDate() {
   var d = new Date(),
       months = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug", "Sep","Oct","Nov","Dec"];
   var dateNow = d.getDate()+"-"+months[d.getMonth()]+"-"+d.getFullYear()+"_"+d.getHours()+":"+d.getMinutes()
   return dateNow
 }
-
-// Check if camera is not being run
-var pid = shell.exec("ps -C raspistill -o pid=", { silent:true }).stdout
-if(pid){
-  console.log("Camera is still being used killing it!");
-  shell.exec("kill "+pid, { silent:true })
-}
-// ╔═════════════════════════════════════════════════════════════════════════════╗
-// ║                                  INPUT                                      ║
-// ╚═════════════════════════════════════════════════════════════════════════════╝
-var lcd, cameraStatus
-var board = new five.Board({
-      io: new Raspi()
-});
-board.on("ready", function() {
-
-  var buttonA = new five.Button(7);
-  buttonA.on("press", function() {
-    input(lcd,"A")
-  });
-
-  var buttonB = new five.Button(10);
-  buttonB.on("press", function() {
-    input(lcd,"B")
-  });
-
-  var buttonC = new five.Button(11);
-  buttonC.on("press", function() {
-    input(lcd,"C")
-  });
-  var buttonD = new five.Button(25);
-  buttonD.on("press", function() {
-    input(lcd,"D")
-  });
-
-
-  lcd = new five.LCD({
-    pins: [0, 2, 3, 4, 5, 6],
-    rows: 2,
-    cols: 16
-  });
-  lcd.clear()
-  menu(lcd,"")
-});
-// ╔═════════════════════════════════════════════════════════════════════════════╗
-// ║                               CAMERA MODES                                  ║
-// ╚═════════════════════════════════════════════════════════════════════════════╝
 var settings = {
   "sh" : function(){return findObjByAttr(subMenu[4],"name","Sharpness").val},
   "co" : function(){return findObjByAttr(subMenu[4],"name","Contrast").val},
@@ -134,53 +178,18 @@ var settings = {
   "ifx": function(){var obj = findObjByAttr(subMenu[4],"name","Img fx"); return obj.options[obj.val]},
   "rot": function(){return findObjByAttr(subMenu[4],"name","Rotation").val}
 }
-function stream(start){
-    if(!streamCam){
-      var streamCam = new Picam({
-        "mode":"timelapse",
-        "output": pathImg,
-        "w":1920,
-        "h":1080,
-        "q":100,
-        "t":0,
-        "e":"jpg",
-        "tl": 3000,
-        "sh": settings.sh(),
-        "co": settings.co(),
-        "br": settings.br(),
-        "sa": settings.sa(),
-        "ISO": settings.iso(),
-        "ev": settings.ev(),
-        "ex": settings.ex(),
-        "awb": settings.awb(),
-        "ifx": settings.ifx(),
-        "rot": settings.rot()
-      });
-    }
-    if(start){
-      streamCam.start();
-      console.log("Taking pictures");
-      cameraStatus = "streaming"
-    }else if(!start){
-      streamCam.stop();
-      console.log("Stop taking pictures");
-      io.sockets.emit("streamOffline")
-      streamCam = undefined
-      cameraStatus = ""
-    }
-}
-
+var cameraTimelapse
 function timelapse(start,lcd){
-  if(!cameraTimelapse){
+  if(start){
     var delay = Math.round(findObjByAttr(subMenu[0],"name","Delay").val * 1000),
         dur = Math.round(findObjByAttr(subMenu[0],"name","Duration").val * 60000),
         encodingObj = findObjByAttr(subMenu[0],"name","Encoding"),
         encoding = encodingObj.options[encodingObj.val],
-        date = getDate(),
-        timePath = "./timelapse/"+date,
+        localPath = "data/timelapse/"+getDate();
+        timePath = path.join(__dirname,"/"+localPath),
         totalAmountPic = (dur/1000) / (delay/1000) + 1
 
-    var cameraTimelapse = new Picam({
+    cameraTimelapse = new Picam({
       "mode":"timelapse",
       "output": timePath+"/%04d."+encoding,
       "w":1920,
@@ -200,38 +209,35 @@ function timelapse(start,lcd){
       "ifx": settings.ifx(),
       "rot": settings.rot()
     })
-  }
+  cameraTimelapse.start();
+  timelapseStatusOn = true
+  console.log("Timelapse started");
   mode = "timelapse"
-  if(start){
-    if(!cameraStatus == ""){
-      stream(false)
-    }
-    cameraTimelapse.start();
-    timelapseStatusOn = true
-    console.log("Timelapse started");
-    cameraStatus = "timelapsing"
   }else if(!start){
+    sendTimekey("","",true)
     cameraTimelapse.stop();
     console.log("Timelapse Stopped");
-    cameraStatus = ""
   }
-
+  var i = 0
   cameraTimelapse.on("read",function(err,filename) {
       if(err) throw err
+      if(i > 1){
+        sendTimekey(timePath,localPath);
+        i = 0
+      }else{
+        i+=1
+      }
       timelapseDisplay(lcd,timePath, totalAmountPic)
   })
 }
 var count = 0
 function singlePicture(){
-  if(streaming){
-    stopStreaming()
-  }
   var encodingObj = findObjByAttr(subMenu[1],"name","Encoding"),
       encoding = encodingObj.options[encodingObj.val],
-      path = "picture/"+count+"-"+getDate()+"."+encoding
+      singlePath = path.join(__dirname,"/data/photos/-"+getDate()+"_"+count+"."+encoding);
   var singleCam = new Picam({
     "mode":"photo",
-    "output": path,
+    "output": singlePath,
     "w":1920,
     "h":1080,
     "q":100,
@@ -249,15 +255,110 @@ function singlePicture(){
     "rot": settings.rot()
   })
   singleCam.start()
-  setTimeout(function() {sendLastPic(path)},3000)
+  singleCam.on("exit",()=>{
+    sendLastPic(singlePath);
+    webRefresh()
+  })
   count += 1
+}
+
+function gifMaker(start){
+  if(start){
+    var duration = findObjByAttr(subMenu[2],"name","Duration").val,
+        pathGif = path.join(__dirname,"/data/gif/temp");
+    var gifCam = new Picam({
+      "mode":"timelapse",
+      "output": pathGif+"/"+random(5)+"--%04d.jpg",
+      "w":540,
+      "h":405,
+      "q":100,
+      "t": duration,
+      "tl":500,
+      "e":"jpg",
+      "sh": settings.sh(),
+      "co": settings.co(),
+      "br": settings.br(),
+      "sa": settings.sa(),
+      "ISO": settings.iso(),
+      "ev": settings.ev(),
+      "ex": settings.ex(),
+      "awb": settings.awb(),
+      "ifx": settings.ifx(),
+      "rot": settings.rot()
+    })
+    gifCam.start()
+    gifStatus()
+    gifCam.on("exit", ()=>{
+      renderGif()
+    })
+  }else if(!start){
+    if(gifCam){
+      console.log("Gif stopped");
+      gifCam.stop()
+    }
+  }
+}
+function renderGif() {
+  console.log("Going to renderGIF");
+  var gifPath = path.join(__dirname,"/data/gif")
+  loading(false)
+  loading(true,"Rendering GIF","May take long")
+  shell.exec("convert -delay 15 -loop 0 "+gifPath+"/temp/*.jpg "+gifPath+"/"+getDate()+".gif", { silent:true, ascync: true },function(){
+    console.log("Gif is ready!");
+    shell.exec("rm "+gifPath+"/temp/* -rf",function(){
+      webRefresh()
+      loading(false)
+      menu(lcd,"",true)
+    })
+  })
+}
+function gifStatus(){
+  loading(true,"Filming gif")
+}
+function loading(start,string,stringTwo){
+  if(start){
+    lcd.clear().cursor(0,1).print(string);
+    if(stringTwo){
+      lcd.cursor(1,1).print(stringTwo)
+    }
+    var ledStatus = true
+    ledBlink = setInterval(()=>{
+      if(ledStatus){
+        LED.color(colorRed);
+        LED.intensity(100);
+        ledStatus = false
+      }else{
+        LED.color(colorRed);
+        LED.intensity(10);
+        ledStatus = true
+      }
+
+    },1000)
+    loadingInterval = setInterval(()=>{
+      if(i > 0){
+        lcd.cursor(2,i-1).print(" ")
+      }else{
+        lcd.cursor(2,20).print(" ")
+      }
+      lcd.cursor(2,i).print(":fullprogress:")
+      i += 1
+      if(i>20){
+        i = 0
+      }
+    },400)
+  }else if(!start){
+    if(loadingInterval){
+      LED.color(colorBlue);
+      clearInterval(ledBlink)
+      clearInterval(loadingInterval)
+    }
+  }
 }
 // ╔═════════════════════════════════════════════════════════════════════════════╗
 // ║                             INPUT HANDLER                                   ║
 // ╚═════════════════════════════════════════════════════════════════════════════╝
 var mode = "menu"
 function input(lcd, input){
-  console.log(input);
   switch (mode) {
     case "menu":
       menu(lcd,input)
@@ -267,6 +368,9 @@ function input(lcd, input){
       break;
     case "single":
       singleHandler(lcd, input)
+      break;
+    case "gif":
+      gifHandler(lcd,input)
       break;
     default:
     console.log("Mode is not set");
@@ -279,13 +383,22 @@ function timelapseStatus(lcd, input){
   switch (input) {
     case "C":
       console.log("Stopping time lapse");
-      lcd.home().clear().print("Stopping timelapse...")
       timelapse(false,lcd)
       menu(lcd,"",true)
       break;
     default:
-
   }
+}
+function timelapseDisplay(lcd,pathTime,calcTotal){
+  countFiles(pathTime, function (err, results) {
+    var size = Math.round(results.bytes/1048576);
+    lcd.clear().cursor(0,0).print(results.files+"/"+calcTotal+" Photos");
+    lcd.cursor(1,0).print(size+" MB")
+    if(results.files == calcTotal){
+      sendTimekey("","",true)
+      lcd.clear().cursor(0,0).print("Timelapse done");
+    }
+  })
 }
 function singleHandler(lcd, input) {
   switch (input) {
@@ -295,41 +408,54 @@ function singleHandler(lcd, input) {
       break;
     case "D":
       singlePicture()
-      lcd.home().clear().print("Made a photo")
+      loading(true,"Saving.....")
       setTimeout(function(){
+        loading(false)
         lcd.clear().cursor(0,0).print("Press top button");
-        lcd.cursor(1,0).print("to take a photo")
+        lcd.cursor(1,0).print("to take a photo");
+        lcd.cursor(3,0).print("Or select to cancel")
       },3000)
       break;
     default:
 
   }
 }
-function timelapseDisplay(lcd,path, calcTotal){
-  countFiles(path, function (err, results) {
-    var size = Math.round(results.bytes/1048576);
-    lcd.clear().cursor(0,0).print(results.files+"/"+calcTotal+" Photos");
-    lcd.cursor(1,0).print(size+" MB")
-    if(results.files == calcTotal){
-      lcd.clear().cursor(0,0).print("Timelapse done");
-      lcd.cursor(1,0).print("Press to render")
-    }
-  })
-}
+function gifHandler(lcd,input){
+  switch (input) {
+    case "C":
+      gifMaker(false)
+      loading(false)
+      menu(lcd,"",true)
+      break;
+    default:
 
+  }
+}
 // ╔═════════════════════════════════════════════════════════════════════════════╗
 // ║                             MENU DECLARATION                                ║
 // ╚═════════════════════════════════════════════════════════════════════════════╝
 var mainMenu = [
   {"name":"Timelapse"},
   {"name":"Single picture"},
+  {"name":"Animated GIF"},
   {"name":"Movie"},
-  {"name":"3sec GIF"},
   {"name":"Settings"},
   0],
-
+  backMenuItem = {
+    "name": "Back :back:",
+    "type": "back",
+    "subFunc": function(lcd){
+      parent[parent.length - 1] = 0
+      cur = mainMenu;
+      menuHight = "top"
+      menuScroll("",lcd,cur,true,"main");
+      return false
+    },
+  },
   subMenu = [
+    //Timelapse
     [
+      backMenuItem,
       {
         "name": "Start",
         "subFunc": function(lcd){
@@ -341,7 +467,7 @@ var mainMenu = [
         "name": "Delay",
         "type": "number",
         "unit": "Seconds",
-        "val": 3,
+        "val": 4,
         "step": 1,
         "min":4,
         "optFunc": function(lcd,onlyreturn){
@@ -350,8 +476,10 @@ var mainMenu = [
             return delayTime
           }
           if(lcd){
-            lcd.cursor(0,0).print(this.name + ":" + delayTime + "S/H");
-            lcd.cursor(1,0).print(this.val + " " + this.unit)
+            lcd.cursor(0,0).print(this.name + ":");
+            lcd.cursor(1,1).print(this.val + " " + this.unit);
+            lcd.cursor(2,0).print("Speed:");
+            lcd.cursor(3,1).print(delayTime + " Sec/Hour")
           }
         }
       },
@@ -368,8 +496,10 @@ var mainMenu = [
             return totalTime
           }
           if(lcd){
-            lcd.cursor(0,0).print(this.name + ":" + totalTime + "Sec");
-            lcd.cursor(1,0).print(this.val + " " + this.unit)
+            lcd.cursor(0,0).print(this.name+ ":");
+            lcd.cursor(1,1).print(this.val + " " + this.unit);
+            lcd.cursor(2,0).print("Final:");
+            lcd.cursor(3,1).print(totalTime +" Seconds")
           }
         }
       },
@@ -380,28 +510,22 @@ var mainMenu = [
         "options":["jpg","png","bmp","gif"],
         "optFunc": function(lcd){
           lcd.clear().cursor(0,0).print("Encoding: ."+this.options[this.val]);
-          lcd.cursor(1,0).print("Scroll to change")
-        }
-      },
-      {
-        "name": "Back",
-        "type": "back",
-        "subFunc": function(lcd){
-          parent[parent.length - 1] = 0
-          cur = mainMenu;
-          menuHight = "top"
-          menuScroll("",lcd,cur);
-          return false
+          lcd.cursor(1,0).print("Scroll to change");
+          lcd.cursor(2,1).print(":pointerup:");
+          lcd.cursor(3,1).print(":pointerdown:")
         }
       },
       0
     ],
+    //Photo
     [
+      backMenuItem,
       {
         "name": "Start",
         "subFunc": function(lcd){
           lcd.clear().cursor(0,0).print("Press top button");
           lcd.cursor(1,0).print("to take a photo")
+          lcd.cursor(3,0).print("Or select to cancel")
           mode = "single"
         }
       },
@@ -413,6 +537,8 @@ var mainMenu = [
         "optFunc": function(lcd){
           lcd.clear().cursor(0,0).print("Encoding: ."+this.options[this.val]);
           lcd.cursor(1,0).print("Scroll to change")
+          lcd.cursor(2,1).print(":pointerup:");
+          lcd.cursor(3,1).print(":pointerdown:")
         }
       },
       {
@@ -422,22 +548,47 @@ var mainMenu = [
           menuScroll("",lcd,cur)
         }
       },
+      0
+    ],
+    //GIF
+    [
+      backMenuItem,
       {
-        "name": "Back",
-        "type": "back",
+        "name": "Start",
         "subFunc": function(lcd){
-          parent[parent.length - 1] = 0
-          cur = mainMenu;
-          menuHight = "top"
-          menuScroll("",lcd,cur);
-          return false
+          lcd.clear().cursor(0,0).print("Filming");
+          gifMaker(true)
+          mode = "gif"
+        }
+      },
+      {
+        "name": "Duration",
+        "type": "number",
+        "unit": "MiliSeconds",
+        "val": 4000,
+        "min":1000,
+        "step":1000,
+        "optFunc": function(){
+            lcd.clear().cursor(0,0).print(this.name + ":");
+            lcd.cursor(1,1).print(this.val + " "+this.unit);
+            lcd.cursor(2,0).print("Duration of");
+            lcd.cursor(3,0).print("captured time.")
+        }
+      },
+      {
+        "name": "Settings",
+        "subFunc": function(lcd){
+          cur = subMenu[4];
+          menuScroll("",lcd,cur)
         }
       },
       0
     ],
+    //Movie
     [],
-    [],
+    //Settings
     [
+      backMenuItem,
       {
         "name": "ISO",
         "type": "number",
@@ -481,7 +632,9 @@ var mainMenu = [
         "options":["auto","off","night","nightpreview","backlight","spotlight","sports","snow","beach","verylong","fixedfps","antishake","fireworks"],
         "optFunc": function(lcd){
           lcd.clear().cursor(0,0).print("Mode: "+this.options[this.val]);
-          lcd.cursor(1,0).print("Scroll to change")
+          lcd.cursor(1,0).print("Scroll to change");
+          lcd.cursor(2,1).print(":pointerup:");
+          lcd.cursor(3,1).print(":pointerdown:")
         }
       },
       {
@@ -491,7 +644,9 @@ var mainMenu = [
         "options":["auto","off","sun","cloud","shade","tungsten","fluorescent","incandescent","flash","horizon"],
         "optFunc": function(lcd){
           lcd.clear().cursor(0,0).print("Mode: "+this.options[this.val]);
-          lcd.cursor(1,0).print("Scroll to change")
+          lcd.cursor(1,0).print("Scroll to change");
+          lcd.cursor(2,1).print(":pointerup:");
+          lcd.cursor(3,1).print(":pointerdown:")
         }
       },
       {
@@ -502,7 +657,9 @@ var mainMenu = [
           "colourswap","washedout","posterise","colourpoint","colourbalance","cartoon"],
         "optFunc": function(lcd){
           lcd.clear().cursor(0,0).print("Effect: ");
-          lcd.cursor(1,0).print(this.options[this.val])
+          lcd.cursor(1,0).print(this.options[this.val]);
+          lcd.cursor(2,1).print(":pointerup:");
+          lcd.cursor(3,1).print(":pointerdown:")
         }
       },
       {
@@ -544,24 +701,13 @@ var mainMenu = [
       {
         "name": "Rotation",
         "type": "number",
-        "val": 0,
+        "val": 180,
         "step": 45,
         "min": 0,
         "max": 359,
         "optFunc": function(lcd){
           lcd.clear().cursor(0,0).print(this.name + ":" + this.val);
           lcd.cursor(1,0).print("0 to 359")
-        }
-      },
-      {
-        "name": "Back",
-        "type": "back",
-        "subFunc": function(lcd){
-          parent[parent.length - 1] = 0
-          cur = mainMenu;
-          menuHight = "top"
-          menuScroll("",lcd,cur);
-          return false
         }
       },
       0
@@ -573,16 +719,17 @@ var mainMenu = [
 // ╚═════════════════════════════════════════════════════════════════════════════╝
 var cur,parent,menuHight = "top"
 function menu(lcd,button,reset){
+  LED.color(colorBlue)
   if(reset){
     mode = "menu"
     menuHight="top"
     cur = mainMenu
     cur[cur.length-1] = 0
-    menuScroll("",lcd,cur)
+    menuScroll("",lcd,cur,true)
   }
   if(!cur){
     cur = mainMenu
-    menuScroll("",lcd,cur)
+    menuScroll("",lcd,cur,true)
   }
 //〚 ______________________ Main MENU ______________________ 〛
   if(menuHight == "top"){
@@ -593,14 +740,27 @@ function menu(lcd,button,reset){
     }else if(button == "C"){
       parent = cur
       lineNumber = cur[cur.length-1]
-      console.log("Going into menu "+ cur[lineNumber].name);
+      saveDisplay("main")
       if(subMenu[lineNumber]){
         cur = subMenu[lineNumber];
-        menuScroll("",lcd,cur);
+        menuScroll("",lcd,cur,true);
         menuHight = "sub"
       }
     }
 //〚 ______________________ SUB MENU ______________________ 〛
+/*
+backMenuItem = {
+  "name": "Back :back:",
+  "type": "back",
+  "subFunc": function(lcd){
+    parent[parent.length - 1] = 0
+    cur = mainMenu;
+    menuHight = "top"
+    menuScroll("",lcd,cur,true,"main");
+    return false
+  },
+
+*/
   }else if(menuHight == "sub"){
     if(button == "A"){
       menuScroll("up",lcd,cur)
@@ -609,11 +769,14 @@ function menu(lcd,button,reset){
     }else if(button == "C"){
       parent = cur
       cur = cur[cur[cur.length-1]]
+      saveDisplay()
       if (cur.subFunc){
         var more = cur.subFunc(lcd)
+        console.log(more);
+      }else{
+
       }
       if(more || !cur.subFunc){
-       console.log("Going into menu "+ cur.name);
         if(cur.type == "number"){
           valNumber(cur,lcd);
           menuHight = "opt"
@@ -631,7 +794,7 @@ function menu(lcd,button,reset){
       valNumber(cur,lcd,"down",step)
     }else if(button == "C"){
       cur = parent
-      menuScroll("",lcd,cur)
+      menuScroll("",lcd,cur,true,true)
       menuHight = "sub"
     }
   }else if(menuHight == "optList"){
@@ -641,57 +804,130 @@ function menu(lcd,button,reset){
       list(lcd,cur,"down")
     }else if(button == "C"){
       cur = parent
-      menuScroll("",lcd,cur)
+      menuScroll("",lcd,cur,true,true)
       menuHight = "sub"
     }
   }
 }
-
-function menuScroll(direction, lcd, curMenu){
+var displayBlock = [0],
+    full = 0,
+    selected
+function menuScroll(direction, lcd, curMenu,reset,backup){
+  //reset
+  if(reset){
+    displayBlock = [0];
+    full = 0;
+    selected = 0;
+  }
+  //Reload parent setting
+  if(backup){
+    if(backup !== "main"){
+      console.log("Loading backup");
+      full = prev.full;
+      selected = prev.selected
+      displayBlock = prev.displayBlock
+    }else{
+      console.log("Loading MAIN backup");
+      full = prevMain.full;
+      selected = prevMain.selected
+      displayBlock = prevMain.displayBlock
+    }
+  }
+  //Error check
   if(!lcd || !curMenu){
     console.log("ERROR PARAMETER NOT DECLARED");
     return
   }
-
-  menuLine = curMenu[curMenu.length -1]
-  if(direction == "up"){
-    menuLine -= 1
-  }else if(direction == "down"){
-    menuLine += 1
+  // Making a displayBlock
+  for(i=0;i<curMenu.length-1;i++){
+    displayBlock[i+1] = curMenu[i]
   }
-
-  function insideArray(item) {
-    if(item < 0){
-      return curMenu.length - 2
-    }else if(item > curMenu.length - 2){
-      return 0
+  if(direction == "up"){
+    if(selected > 0){
+      selected -= 1
     }else{
-      return item
+      if(full > 0){
+        full -= 1
+      }else{
+        var skipped = Math.floor((displayBlock.length-1)/4 - 1)*4,
+            remaining = (displayBlock.length-1)%4
+        full = skipped+remaining;
+        selected = 3
+      }
+    }
+    if(displayBlock[0] > 0){
+      displayBlock[0] -= 1
+    }else{
+      displayBlock[0] = displayBlock.length - 2
+    }
+  }else if(direction == "down"){
+    if(selected < 3){
+      selected += 1
+    }else{
+      if(full < displayBlock.length - 5){
+        full += 1
+      }else{
+        full = 0;
+        selected = 0
+      }
+    }
+    if(displayBlock[0] < displayBlock.length - 2){
+      displayBlock[0] += 1
+    }else{
+      displayBlock[0] = 0
     }
   }
-
-  menuLine = insideArray(menuLine)
-  var menuLine2 = insideArray(menuLine + 1)
-  var topLine = curMenu[menuLine],
-      bottomLine = curMenu[menuLine2]
-  curMenu[curMenu.length-1] = menuLine
-
-  lcd.clear();
-  lcd.useChar("pointerright")
-  if(topLine.options){
-    lcd.cursor(0,0).print(":pointerright:"+topLine.name +":"+topLine.options[topLine.val]);
-  }else if(topLine.val || topLine.val == 0){
-    lcd.cursor(0,0).print(":pointerright:"+topLine.name +":"+topLine.val);
-  }else{
-    lcd.cursor(0,0).print(":pointerright:"+topLine.name);
+  // if(displayBlock[0] >= displayBlock.length){
+  //   displayBlock[0] -= 1
+  // }
+  lcd.clear()
+  for(i=1+full;i<5+full && i<displayBlock.length;i++) {
+    displaythis(displayBlock[i],i-1-full,selected)
   }
+  function displaythis(line,list,select) {
+    if(list == select){
+      if(line.options){
+        lcd.cursor(list,0).print(":pointerright:"+line.name +":"+line.options[line.val]);
+      }else if(line.val || line.val == 0){
+        if(line.unit){
+          lcd.cursor(list,0).print(":pointerright:"+line.name +":"+line.val+line.unit.substring(0,3));
+        }else{
+          lcd.cursor(list,0).print(":pointerright:"+line.name +":"+line.val);
+        }
+      }else{
+        lcd.cursor(list,0).print(":pointerright:"+line.name);
+      }
+    }
+    if(line.options){
+      lcd.cursor(list,1).print(line.name +":"+line.options[line.val]);
+    }else if(line.val || line.val == 0){
+      if(line.unit){
+        lcd.cursor(list,1).print(line.name +":"+line.val+line.unit.substring(0,3));
+      }else{
+        lcd.cursor(list,1).print(line.name +":"+line.val);
+      }
+    }else{
+      lcd.cursor(list,1).print(line.name);
+    }
+  }
+  curMenu[curMenu.length-1] = displayBlock[0]
+}
 
-  if(bottomLine.options){
-    lcd.cursor(1,0).print(" "+bottomLine.name +":"+bottomLine.options[bottomLine.val]);
-  }else if(bottomLine.val || bottomLine.val == 0){
-    lcd.cursor(1,0).print(" "+bottomLine.name + ":" + bottomLine.val)
-  }else{
-    lcd.cursor(1,0).print(" "+bottomLine.name)
+// FUNCTIONS
+
+function saveDisplay(opt){
+  if(!opt){
+    prev = {
+      "full" : full,
+      "selected" : selected,
+      "displayBlock" : displayBlock
+    }
+  }else if(opt == "main"){
+    prevMain = {
+      "full" : full,
+      "selected" : selected,
+      "displayBlock" : displayBlock
+    }
   }
 }
 
@@ -716,8 +952,6 @@ function list(lcd,cur,direction){
   cur.val = val
   cur.optFunc(lcd)
 }
-
-
 function findObjByAttr(array, attr, value) {
   var obj = array.find(x => x[attr] == value);
   if(!obj){
